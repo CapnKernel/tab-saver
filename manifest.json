@@ -4,10 +4,10 @@
   "version": "1.0",
   "description": "Save and load tabs/windows to/from a simple text file (one line per tab).",
   "permissions": [
-    "tabs",
-    "windows",
     "downloads",
-    "webNavigation"
+    "tabs",
+    "webNavigation",
+    "windows"
   ],
   "action": {
     "default_title": "Tab Workspaces"
