@@ -4,6 +4,20 @@
   const messageEl = $('#messages');
   const fileInput = $('#file-input');
 
+  function message(msg) {
+    // const timestamp = new Date().toLocaleTimeString();
+    // const fullMessage = `[${timestamp}] ${msg}\n`;
+
+    // Append new message
+    messageEl.textContent += (msg + "\n");
+    messageEl.style.display = '';
+
+    // Auto-scroll to bottom
+    messageEl.scrollTop = messageEl.scrollHeight;
+
+    console.log('[TabWorkspaces] ', msg);
+  }
+
   // show fragment message if present
   function showFragmentMessage() {
     const hash = location.hash || '';
@@ -436,10 +450,6 @@
     message('Restore completed.');
   }
 
-  async function clearLog() {
-    messageEl.textContent = '';
-  }
-
   // load file from input element
   function loadFileViaInput() {
     fileInput.value = '';
@@ -464,18 +474,8 @@
     reader.readAsText(file);
   });
 
-  function message(msg) {
-    // const timestamp = new Date().toLocaleTimeString();
-    // const fullMessage = `[${timestamp}] ${msg}\n`;
-
-    // Append new message
-    messageEl.textContent += (msg + "\n");
-    messageEl.style.display = '';
-
-    // Auto-scroll to bottom
-    messageEl.scrollTop = messageEl.scrollHeight;
-
-    console.log('[TabWorkspaces] ', msg);
+  async function clearLog() {
+    messageEl.textContent = '';
   }
 
   // attach handlers
