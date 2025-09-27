@@ -221,8 +221,48 @@
     return res;
   }
 
+  // Wait for a tab to reach a specific status with timeout
+  function waitForTabStatus(tabId, targetStatus, timeoutMs = 1000) {
+    return new Promise((resolve) => {
+      let timeoutId;
+      let resolved = false;
+
+      const listener = (updatedTabId, changeInfo, tab) => {
+        if (updatedTabId === tabId && changeInfo.status === targetStatus) {
+          resolveOnce(true);
+        }
+      };
+
+      function resolveOnce(success) {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolve(success);
+        }
+      }
+
+      function cleanup() {
+        clearTimeout(timeoutId);
+        chrome.tabs.onUpdated.removeListener(listener);
+      }
+
+      timeoutId = setTimeout(() => {
+        resolveOnce(false);
+      }, timeoutMs);
+
+      chrome.tabs.onUpdated.addListener(listener);
+
+      // Check current status immediately
+      chrome.tabs.get(tabId).then((tab) => {
+        if (tab.status === targetStatus) {
+          resolveOnce(true);
+        }
+      }).catch(() => {});
+    });
+  }
+
   // Wait for tab navigation to start
-  function waitForTabNavigationStart(prefix, tabId, timeoutMs = 10000) {
+  function waitForTabNavigationStart(prefix, tabId, timeoutMs) {
     return new Promise((resolve) => {
       let timeoutId;
       let resolved = false;
@@ -263,7 +303,7 @@
 
       // Set timeout
       timeoutId = setTimeout(() => {
-        message(`${prefix} WARN: timeout for tab ${tabId}`);
+        message(`${prefix} WARN: timeout for tab ${tabId} after ${timeoutMs} msec`);
         resolveOnce(false);
       }, timeoutMs);
 
@@ -277,11 +317,12 @@
     const prefix = `[Tab ${tabIndex}/${totalTabs}]`;
     try {
       let tabId;
-      // Create tab or window based on whether we have a windowId
+
+      // Create tab or window with about:blank
       if (windowId === null) {
-        message(`${prefix} Creating new window with URL: ${url}`);
+        message(`${prefix} Creating new window with placeholder for: ${url}`);
         const win = await chrome.windows.create({
-          url: url,
+          url: 'about:blank',
           focused: false
         });
 
@@ -293,20 +334,34 @@
         tabId = win.tabs[0].id;
         // message(`${prefix} Created window ${windowId} with tab ${tabId}`);
       } else {
-        message(`${prefix} Creating tab in window ${windowId} with URL: ${url}`);
+        message(`${prefix} Creating tab in window ${windowId} with placeholder for: ${url}`);
         const tab = await chrome.tabs.create({
           windowId: windowId,
-          url: url,
+          url: 'about:blank',
           active: false
         });
 
         tabId = tab.id;
-        // message(`${prefix} Created tab ${tabId} in window ${windowId}`);
+        message(`${prefix} Created tab ${tabId} in window ${windowId}`);
       }
+
+      // Wait for about:blank to complete loading before updating
+      // message(`${prefix} Waiting for about:blank to complete...`);
+      const blankLoaded = await waitForTabStatus(tabId, 'complete', 1000);
+
+      if (blankLoaded) {
+        // message(`${prefix} about:blank loaded successfully`);
+      } else {
+        message(`${prefix} WARN: about:blank didn't complete, updating anyway...`);
+      }
+
+      // Now update the tab URL after about:blank is ready
+      message(`${prefix} Updating tab to target URL...`);
+      await chrome.tabs.update(tabId, { url: url });
 
       // Wait for this specific tab to be ready
       message(`${prefix} Waiting for tab ${tabId} to start loading...`);
-      const waitForLoad = 10000;
+      const waitForLoad = 20000;
       const grace = 500;
       const tabReady = await Promise.race([
         waitForTabNavigationStart(prefix, tabId, waitForLoad),
@@ -501,6 +556,7 @@
     // After creating each tab, call chrome.tabs.discard(tabId).
 
     message('Starting restore from groups...');
+    windowGroups = []; // Reset tracking
 
     for (let gi = 0; gi < groups.length; gi++) {
       const prefix = `[Group ${gi + 1}/${groups.length}]`;
@@ -518,7 +574,8 @@
           urls[0] = chrome.runtime.getURL('index.html#') + encodeURIComponent(msg);
         }
 
-        // Filter out null URLs
+        // Filter out null URLs but keep track of original count
+        const originalUrls = urls.slice();
         urls = urls.filter(url => url !== null);
 
         if (urls.length === 0) {
@@ -526,8 +583,17 @@
           continue;
         }
 
-        // Process this group (window)
+        // Process this group (window) and save the window info
         const windowId = await processWindowGroup(prefix, urls);
+
+        // Store window group information for verification
+        windowGroups.push({
+          groupIndex: gi,
+          windowId: windowId,
+          expectedUrls: urls, // The URLs we actually tried to create
+          originalUrls: originalUrls, // Original URLs before filtering
+          timestamp: Date.now()
+        });
 
         message(`${prefix} Completed group in window ${windowId}\n`);
 
@@ -538,10 +604,25 @@
 
       } catch (error) {
         message(`${prefix} ERROR: Failed to process group: ${error.message}`);
-        // Continue with next group even if one fails
+        // Still track failed groups for verification
+        windowGroups.push({
+          groupIndex: gi,
+          windowId: null,
+          expectedUrls: [],
+          originalUrls: group.slice(),
+          timestamp: Date.now(),
+          error: error.message
+        });
       }
     }
 
+    /*
+    // Verify all windows after restoration
+    message('Restore completed. Starting URL verification...');
+    await verifyWindowUrls();
+
+    message('URL verification completed.');
+    */
     message('Restore completed.');
   }
 
