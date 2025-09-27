@@ -66,7 +66,6 @@
     // When saving (or loading), filter out use of Great Suspender pages, back to real URLs
     // FIXME: Of two minds about this, we're throwing away the title and position.
     url = url.replace(/^chrome-extension:\/\/lcfkjkinljmlbbffekcbpinpafbmjpde\/suspended.html#(ttl=[^&]+)?&(pos=[^&]+)?&uri=/, '');
-
     return url;
   }
 
@@ -195,30 +194,26 @@
       // Keep header if first line starts with #
       const [first, ...rest] = group;
       if (first.startsWith('#')) {
-        const filtered = rest
-          .map(url => filterUrl(url))
-          .filter(url => url !== null);
+        const filtered = rest.map(url => filterUrl(url)).filter(url => url !== null);
         return [first, ...filtered];
       } else {
-        const filtered = group
-          .map(url => filterUrl(url))
-          .filter(url => url !== null);
+        const filtered = group.map(url => filterUrl(url)).filter(url => url !== null);
         return filtered;
       }
     });
     return res;
   }
 
-  function waitForTabNavigationStart(tabId, timeoutMs = 2000) {
+  // Wait for tab navigation to start
+  function waitForTabNavigationStart(prefix, tabId, timeoutMs = 10000) {
     return new Promise((resolve) => {
       let timeoutId;
       let resolved = false;
 
-      // Declare functions first
       // Listen for navigation commit (more reliable than onUpdated)
       const onCommitted = (details) => {
         if (details.tabId === tabId && details.frameId === 0) {
-          message(`WaitForTabNavigationStart: navigation committed for ${tabId}`);
+          message(`${prefix} navigation committed for ${tabId}`);
           resolveOnce(true);
         }
       };
@@ -226,7 +221,7 @@
       // Fallback: also listen for tab updates
       const onUpdated = (updatedTabId, info) => {
         if (updatedTabId === tabId && info.status === "loading") {
-          message(`WaitForTabNavigationStart: "loading" event found for ${tabId}`);
+          message(`${prefix} "loading" event found for ${tabId}`);
           resolveOnce(true);
         }
       };
@@ -251,7 +246,7 @@
 
       // Set timeout
       timeoutId = setTimeout(() => {
-        message(`WARN: WaitForTabNavigationStart: timeout for tab ${tabId}`);
+        message(`${prefix} WARN: timeout for tab ${tabId}`);
         resolveOnce(false);
       }, timeoutMs);
 
@@ -260,45 +255,131 @@
     });
   }
 
-  // Returns the id of the window the tab was created in.
-  async function createTabAndSafeDiscard(windowId, url) {
+  // Process a single tab: create tab/window → wait for loading → discard → return windowId
+  async function processSingleTab(windowId, url, tabIndex, totalTabs) {
+    const prefix = `[Tab ${tabIndex}/${totalTabs}]`;
     try {
       let tabId;
-
+      // Create tab or window based on whether we have a windowId
       if (windowId === null) {
-        message(`In createTabAndSafeDiscard, winId is null, url=${url}.  Calling win create`);
-        const win = await chrome.windows.create({ url, focused: false });
+        message(`${prefix} Creating new window with URL: ${url}`);
+        const win = await chrome.windows.create({
+          url: url,
+          focused: false
+        });
+
+        if (!win || !win.tabs || win.tabs.length === 0) {
+          throw new Error("Failed to create window or first tab");
+        }
+
         windowId = win.id;
-        tabId = win.tabs[0]?.id;
-        message(`In createTabAndSafeDiscard, back from calling win create, windowId=${windowId} tabId=${tabId}`);
+        tabId = win.tabs[0].id;
+        // message(`${prefix} Created window ${windowId} with tab ${tabId}`);
       } else {
-        message(`In createTabAndSafeDiscard, windowId=${windowId} Calling tab create`);
-        const tab = await chrome.tabs.create({ windowId, url, active: false });
+        message(`${prefix} Creating tab in window ${windowId} with URL: ${url}`);
+        const tab = await chrome.tabs.create({
+          windowId: windowId,
+          url: url,
+          active: false
+        });
+
         tabId = tab.id;
-        message(`In createTabAndSafeDiscard, back from tab create, tabId=${tabId}`);
+        // message(`${prefix} Created tab ${tabId} in window ${windowId}`);
       }
 
-      if (!tabId) throw new Error("Failed to get tab ID");
-
-      // Wait for navigation with better timeout handling
-      message(`In createTabAndSafeDiscard, waiting for nav start, tabId=${tabId}`);
-      await Promise.race([
-        waitForTabNavigationStart(tabId, 2000),
-        new Promise(resolve => setTimeout(() => resolve(false), 2500))
+      // Wait for this specific tab to be ready
+      message(`${prefix} Waiting for tab ${tabId} to start loading...`);
+      const waitForLoad = 10000;
+      const grace = 500;
+      const tabReady = await Promise.race([
+        waitForTabNavigationStart(prefix, tabId, waitForLoad),
+        new Promise(resolve => setTimeout(() => resolve(false), waitForLoad + grace))
       ]);
 
-      message(`In createTabAndSafeDiscard, back from nav start wait, tabId=${tabId}, calling discard`);
+      if (tabReady) {
+        message(`${prefix} Discarding tab ${tabId}...`);
+        await chrome.tabs.discard(tabId);
+        message(`${prefix} Successfully processed tab ${tabId}`);
+      } else {
+        message(`${prefix} WARN: Tab ${tabId} didn't start loading, discarding anyway...`);
+        message(`  Lost URL: ${url}`);
+        await chrome.tabs.discard(tabId).catch(() => {});
+        message(`${prefix} Tab ${tabId} discarded (timeout)`);
+      }
 
-      await chrome.tabs.discard(tabId);
-      message(`In createTabAndSafeDiscard, back from tab discard`);
-      message(`In createTabAndSafeDiscard, created url=${url} ok`);
-
-      return windowId;
+      return { success: true, windowId: windowId };
 
     } catch (error) {
-      message("ERROR: createTabAndSafeDiscard failed:", error);
-      return windowId; // Return whatever windowId we have
+      message(`${prefix} ERROR processing tab: ${error.message}`);
+      // Try to discard anyway as a fallback if we have a tabId
+      if (tabId) {
+        try {
+          await chrome.tabs.discard(tabId);
+        } catch (e) {
+          // Ignore discard errors at this point
+        }
+      }
+      // Still return the windowId (might be null if window creation failed)
+      return { success: false, windowId: windowId };
     }
+  }
+
+  // Process a single tab with a delay before starting
+  async function processSingleTabWithDelay(getWindowId, url, tabIndex, totalTabs, startDelay) {
+    // Wait for the scheduled start time
+    if (startDelay > 0) {
+      await new Promise(resolve => setTimeout(resolve, startDelay));
+    }
+
+    // Get the current windowId (which should be fixed for parallel tabs)
+    const windowId = getWindowId();
+
+    return await processSingleTab(windowId, url, tabIndex, totalTabs);
+  }
+
+  // Process a group of URLs as a window (first tab creates window, rest are parallel)
+  async function processWindowGroup(prefix, urls) {
+    if (urls.length === 0) {
+      throw new Error("No URLs provided for window group");
+    }
+
+    let currentWindowId = null;
+
+    // First tab: sequential (creates window)
+    message(`${prefix} Processing first tab (window creation) for ${urls.length} tabs...`);
+    const firstResult = await processSingleTab(null, urls[0], 1, urls.length);
+    currentWindowId = firstResult.windowId;
+
+    if (!currentWindowId) {
+      throw new Error("Failed to create window with first tab");
+    }
+
+    // If there are more tabs, process them in parallel with staggered starts
+    if (urls.length > 1) {
+      message(`${prefix} Processing remaining ${urls.length - 1} tabs in parallel...`);
+      const remainingUrls = urls.slice(1);
+      const remainingPromises = remainingUrls.map((url, i) => {
+        const startDelay = (i + 1) * 300; // 300ms, 600ms, 900ms, etc.
+        const tabIndex = i + 2; // tabs 2, 3, 4, etc.
+
+        return processSingleTabWithDelay(
+          () => currentWindowId, // Fixed windowId from first tab
+          url,
+          tabIndex,
+          urls.length,
+          startDelay
+        );
+      });
+
+      const results = await Promise.allSettled(remainingPromises);
+
+      // Log results for remaining tabs
+      const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+      const failed = results.filter(r => r.status === 'rejected' || !r.value.success).length;
+      message(`${prefix} Parallel tabs completed, ${successful} successful, ${failed} failed`);
+    }
+
+    return currentWindowId;
   }
 
   // create windows and tabs from parsed groups
@@ -310,31 +391,48 @@
     //  - else first tab is the first URL in group.
     // After creating each tab, call chrome.tabs.discard(tabId).
 
-    message('In restoreFromGroups');
+    message('Starting restore from groups...');
+
     for (let gi = 0; gi < groups.length; gi++) {
+      const prefix = `[Group ${gi + 1}/${groups.length}]`;
       const group = groups[gi];
       if (group.length === 0) continue;
 
-      let winId = null;
-      let urls = group.slice();
+      message(`${prefix} ${group.length} URLs`);
 
-      for (let i = 0; i < urls.length; i++) {
-        let url = urls[i];
+      try {
+        let urls = group.slice();
 
-        if (url.startsWith('#')) {
+        // Process header if present
+        if (urls[0].startsWith('#')) {
           const msg = urls[0].slice(1).trim();
-          url = chrome.runtime.getURL('index.html#') + encodeURIComponent(msg);
+          urls[0] = chrome.runtime.getURL('index.html#') + encodeURIComponent(msg);
         }
 
-        try {
-          message(`Calling createTabAndSafeDiscard.  winId=${winId} url=${url}`)
-          winId = await createTabAndSafeDiscard(winId, url);
-          message(`Successfully back from createTabAndSafeDiscard.  winId=${winId}`)
-        } catch (e) {
-          message(`Window create failed: ${e.message || e}`);
+        // Filter out null URLs
+        urls = urls.filter(url => url !== null);
+
+        if (urls.length === 0) {
+          message(`${prefix} Skipping empty group ${gi + 1}`);
+          continue;
         }
+
+        // Process this group (window)
+        const windowId = await processWindowGroup(prefix, urls);
+
+        message(`${prefix} Completed group in window ${windowId}\n`);
+
+        // Small delay between windows to avoid overwhelming the browser
+        if (gi < groups.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+
+      } catch (error) {
+        message(`${prefix} ERROR: Failed to process group: ${error.message}`);
+        // Continue with next group even if one fails
       }
     }
+
     message('Restore completed.');
   }
 
@@ -360,7 +458,7 @@
       message(`Parsed ${groups.length} group(s). Restoring...`);
       message('Calling restoreFromGroups');
       await restoreFromGroups(groups);
-      message('Back from restoreFromGroups');
+      message('Restore process finished');
     };
     reader.onerror = (e) => message('File read error');
     reader.readAsText(file);
