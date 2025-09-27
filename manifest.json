@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Workspaces (Save / Load)",
+  "version": "1.0",
+  "description": "Save and load tabs/windows to/from a simple text file (one line per tab).",
+  "permissions": [
+    "tabs",
+    "windows",
+    "downloads",
+    "webNavigation"
+  ],
+  "action": {
+    "default_title": "Tab Workspaces"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["index.html", "script.js"],
+      "matches": ["chrome-extension://*/*"]
+    }
+  ]
+}

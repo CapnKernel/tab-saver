@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Tab Workspaces</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 18px; }
+    button { margin: 6px 6px 6px 0; padding: 8px 12px; border-radius: 6px; border: 1px solid #ccc; background: white; cursor: pointer; }
+    input[type="file"] { display:none; }
+    small { color: #666; }
+
+    .msg {
+        margin-bottom: 12px;
+        padding: 10px;
+        border-radius: 6px;
+        background: #f3f4f6;
+        /* Add the Option 2 styles */
+        max-height: 600px;
+        overflow-y: auto;
+        /* Keep your existing background or use Option 2's */
+        background: #f5f5f5; /* Option 2's slightly different shade */
+    }
+
+    #message {
+        margin-top: 10px;
+        color: #444;
+        font-size: 0.95rem;
+        /* Ensure it uses pre formatting */
+        white-space: pre-wrap; /* This is key for <pre> elements */
+        font-family: monospace; /* Optional: gives it a console-like appearance */
+    }
+  </style>
+</head>
+<body>
+  <div>
+    <h2 id="banner"></h2>
+  </div>
+
+  <div class="hide-on-banner">
+    <button id="save-window">Save current window</button>
+    <button id="save-all">Save all windows</button>
+    <button id="delete-all">Delete all windows but this</button>
+    <button id="load-file">Load file and restore</button>
+    <input id="file-input" type="file" accept=".txt,text/plain" />
+  </div>
+
+  <div id="progress" style="display: none; margin: 10px 0;">
+    <span id="progressText">0/0 windows deleted</span>
+    <!-- <progress id="progressBar" value="0" max="100" style="width: 100%;"></progress> -->
+  </div>
+
+  <pre id="messages" class="msg hide-on-banner" style="display: none;"></pre>
+
+  <div class="hide-on-banner">
+    <button id="clear">Clear log</button>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
