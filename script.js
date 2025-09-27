@@ -1,5 +1,8 @@
 // script.js - runs in the extension page context
 (() => {
+  // Global to track window groups
+  let windowGroups = [];
+
   const $ = sel => document.querySelector(sel);
   const messageEl = $('#messages');
   const fileInput = $('#file-input');
@@ -396,6 +399,98 @@
     return currentWindowId;
   }
 
+  // Verify URLs in a single window
+  async function verifySingleWindow(group) {
+    try {
+      // Get current tabs in the window
+      const tabs = await chrome.tabs.query({ windowId: group.windowId });
+      const currentUrls = tabs.map(tab => tab.url);
+      const expectedUrls = group.expectedUrls.slice();
+
+      let urlMismatchCount = 0;
+
+      // Check if we have the right number of tabs
+      if (currentUrls.length !== expectedUrls.length) {
+        message(`[Group ${group.groupIndex + 1}] ❌ Count mismatch: Expected ${expectedUrls.length} tabs, found ${currentUrls.length}`);
+        urlMismatchCount = Math.abs(currentUrls.length - expectedUrls.length); // Count all missing/extra tabs as mismatches
+      } else {
+        // Lengths are the same, compare each position
+        for (let i = 0; i < expectedUrls.length; i++) {
+          const expected = expectedUrls[i];
+          const actual = currentUrls[i];
+
+          if (expected !== actual) {
+            message(`[Group ${group.groupIndex + 1}] ❌ URL mismatch at position ${i}: expected "${expected}", got "${actual}"`);
+            urlMismatchCount++;
+          }
+        }
+      }
+
+      if (urlMismatchCount === 0) {
+        message(`[Group ${group.groupIndex + 1}] ✅ All URLs match expected`);
+      } else {
+        message(`[Group ${group.groupIndex + 1}] ❌ Found ${urlMismatchCount} URL mismatch(es)`);
+      }
+
+      return {
+        windowId: group.windowId,
+        groupIndex: group.groupIndex,
+        expectedCount: expectedUrls.length,
+        actualCount: currentUrls.length,
+        urlMismatchCount: urlMismatchCount
+      };
+
+    } catch (error) {
+      message(`[Group ${group.groupIndex + 1}] ERROR verifying window ${group.windowId}: ${error.message}`);
+      return {
+        windowId: group.windowId,
+        groupIndex: group.groupIndex,
+        error: error.message,
+        urlMismatchCount: 1 // Count errors as mismatches
+      };
+    }
+  }
+
+  // Verify URLs in all restored windows
+  async function verifyWindowUrls() {
+    message('=== Starting URL Verification ===');
+
+    let totalUrlMismatches = 0;
+    let totalWindowsChecked = 0;
+
+    for (const group of windowGroups) {
+      if (!group.windowId) {
+        message(`[Group ${group.groupIndex + 1}] SKIPPED - No window ID (error: ${group.error || 'unknown'})`);
+        continue;
+      }
+
+      message(`[Group ${group.groupIndex + 1}] Verifying window ${group.windowId}...`);
+
+      const verificationResult = await verifySingleWindow(group);
+      totalUrlMismatches += verificationResult.urlMismatchCount;
+      totalWindowsChecked++;
+    }
+
+    message(`=== Verification Summary ===`);
+    message(`Windows checked: ${totalWindowsChecked}`);
+    message('Total URL mismatches: ' + totalUrlMismatches + ' ' + (totalUrlMismatches ? '❌' : '✅'));
+    message(`Window groups tracked: ${windowGroups.length}`);
+
+    return totalUrlMismatches;
+  }
+
+  // Helper function to run verification on demand
+  async function verifyAllWindows() {
+    message('=== Manual Verification Started ===');
+    if (windowGroups.length === 0) {
+      message('No window groups to verify. Run restore first.');
+      return;
+    }
+
+    await verifyWindowUrls();
+    message('=== Manual Verification Finished ===');
+  }
+
   // create windows and tabs from parsed groups
   async function restoreFromGroups(groups) {
     // If many tabs/windows, create them sequentially to avoid overload.
@@ -496,6 +591,10 @@
 
   $('#load-file').addEventListener('click', () => {
     loadFileViaInput();
+  });
+
+  $('#verify').addEventListener('click', () => {
+    verifyAllWindows();
   });
 
   $('#clear').addEventListener('click', async () => {
